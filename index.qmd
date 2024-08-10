@@ -1,0 +1,418 @@
+---
+title: "Evaluating Time-to-Event Models is Hard"
+author: "Max Kuhn"
+format: 
+  revealjs:
+    include-before-body: header.html
+    include-after-body: footer-annotations.html    
+editor: source
+knitr:
+  opts_chunk: 
+    echo: true
+    collapse: true
+    comment: "#>"
+---
+
+```{r}
+#| label: initialize
+#| echo: false
+
+library(tidymodels)
+library(censored)
+tidymodels_prefer()
+theme_set(theme_bw())
+options(pillar.advice = FALSE, pillar.min_title_chars = Inf)
+```
+
+```{r}
+#| label: model-fit
+#| echo: false
+#| cache: true
+
+data("mlc_churn")
+
+mlc_churn <-
+  mlc_churn %>%
+  mutate(
+    churned = ifelse(churn == "yes", 1, 0),
+    event_time = Surv(account_length, churned)
+  ) %>%
+  select(-churned, account_length)
+
+
+set.seed(1)
+churn_split <- initial_validation_split(mlc_churn)
+churn_tr <- training(churn_split)
+churn_te <- testing(churn_split)
+churn_val <- validation(churn_split)
+churn_rs <- validation_set(churn_split)
+
+# ------------------------------------------------------------------------------
+
+event_metrics <- metric_set(brier_survival, roc_auc_survival)
+
+mod_res <- 
+  rand_forest()  %>% 
+  set_engine("aorsf")  %>% 
+  set_mode("censored regression")  %>%
+  fit_resamples(
+    event_time ~ ., 
+    resamples = churn_rs, 
+    metrics = event_metrics,
+    eval_time = 5:230,
+    control = control_resamples(save_pred = TRUE, save_workflow = TRUE)
+  )
+
+mod_fit <- fit_best(mod_res)
+rkm_curve <- 
+  mod_fit$fit$fit$censor_probs$fit[1:7] %>% 
+  as_tibble()
+
+val_pred <- collect_predictions(mod_res)
+val_ind <- c(580, # event at time 17.0
+             721, # censored at time 17.0
+             426  # event at 100.0
+             )
+val_example <- val_pred[val_ind,]
+```
+
+## Probability Predictions
+
+```{r}
+#| label: three-examples
+#| echo: false
+#| fig-width: 6
+#| fig-height: 4
+#| out-width: 80%
+#| fig-align: center
+three_examples <- 
+  val_example %>% 
+  mutate(example = as.character(event_time)) %>% 
+  unnest(.pred) %>% 
+  ggplot(aes(.eval_time, .pred_survival, id = example, col = example)) +
+  geom_step() + 
+  labs(x = "Time", y = "Probability of Survival") +
+  theme(legend.position = "top")
+three_examples
+```
+
+## Compute Metrics at Specific  Times
+
+```{r}
+#| label: eval-times
+#| echo: false
+#| fig-width: 6
+#| fig-height: 4
+#| out-width: 80%
+#| fig-align: center
+three_examples + 
+  geom_vline(xintercept = (1:7) * 30, lty = 3)
+```
+
+## Classification(ish) Metrics
+
+Most dynamic metrics convert the survival probabilities to events and non-events based on some probability threshold. 
+
+From there, we can apply existing classification metrics, such as
+
+- Brier Score (for calibration)
+- Area under the ROC curve (for separation)
+
+We’ll talk about both of these. 
+
+There are more details on dynamics metrics at [tidymodels.org](https://www.tidymodels.org/learn/#category=survival%20analysis). 
+
+## Converting to Events 
+
+For a specific evaluation time point $\tau$, we convert the observed event time to a binary event/non-event version (if possible) ($y_{i\tau} \in \{0, 1\}$). 
+
+$$
+y_{i\tau} = 
+\begin{cases}
+1 & \text{if } t_{i} \leq \tau\text{ and  event} \notag \\ 
+0 & \text{if } t_{i} \gt \tau \text{ and } either \notag \\ 
+missing & \text{if } t_{i} \leq \tau\text{ and censored }
+\end{cases}
+$$
+
+## Converting to Events
+
+```{r}
+#| label: plot-graf-categories
+#| echo: false
+#| warning: false
+#| fig-width: 8
+#| fig-height: 4
+#| out-width: 70%
+#| fig-align: center
+obs_time <- c(4, 2)
+obs_status <- c("censored", "event")
+
+df1 <- tibble::tibble(
+  obs_id = 1:2,
+  obs_time = obs_time,
+  obs_status = obs_status,
+  eval_time = 1,
+  eval_status = c("censored", "censored")
+)
+df2 <- tibble::tibble(
+  obs_id = 1:2,
+  obs_time = obs_time,
+  obs_status = obs_status,
+  eval_time = 3,
+  eval_status = c("censored", "event")
+)
+df3 <- tibble::tibble(
+  obs_id = 1:2,
+  obs_time = obs_time,
+  obs_status = obs_status,
+  eval_time = 5,
+  eval_status = c(NA, "event")
+)
+df <- bind_rows(df1, df2, df3)
+
+pch_dot_empty <- 1
+pch_dot_solid <- 19
+pch_triangle_empty <- 2
+pch_triangle_solid <- 17
+
+df %>%
+  dplyr::mutate(
+    obs_status = dplyr::if_else(obs_status == "censored", pch_dot_empty, pch_dot_solid),
+    eval_status = dplyr::if_else(
+      eval_status == "censored",
+      pch_triangle_empty,
+      pch_triangle_solid
+    ),
+    eval_time_label = factor(paste("Evaluation Time =", eval_time))
+  ) %>% 
+  ggplot() +
+  geom_point(aes(obs_time, obs_id, shape = obs_status, size = I(5))) +
+  geom_segment(aes(
+    x = rep(0, 6),
+    y = obs_id,
+    xend = obs_time,
+    yend = obs_id
+  )) +
+  geom_vline(aes(
+    xintercept = eval_time,
+    col = I("red"),
+    linetype = I("dashed"),
+    linewidth = I(0.8)
+  )) +
+  geom_point(aes(
+    eval_time,
+    obs_id,
+    shape = eval_status,
+    col = I("red"),
+    size = I(5)
+  )) +
+  scale_shape_identity(
+    "Status",
+    labels = c(
+      "Observation: censored",
+      "Observation: event",
+      "Evaluation: non-event",
+      "Evaluation: event"
+    ),
+    breaks = c(1, 19, 2, 17),
+    guide = "legend"
+  ) +
+  scale_x_continuous(limits = c(0, 7)) +
+  scale_y_continuous(limits = c(0.5, 2.5)) +
+  labs(x = "Time", y = "Sample") +
+  theme_bw() +
+  theme(axis.text.y = element_blank(), legend.position = "top") +
+  facet_grid( ~ eval_time_label) 
+```
+
+## Dealing with Missing Outcome Data
+
+Without censored data points, this conversion would yield appropriate performance estimates since no event outcomes would be missing. 
+
+<br>
+
+Otherwise, there is the potential for bias due to missingness. 
+
+<br>
+
+We'll use tools from causal inference to compensate by creating a **propensity score** that uses the probability of being censored/missing. 
+
+Case weights use the inverse of this probability. See [Graf _et al_ (1999)](https://scholar.google.com/scholar?hl=en&as_sdt=0%2C7&q=graf+1999+%22Assessment+and+comparison+of+prognostic+classification+schemes+for+survival+data%22&btnG=).
+
+```{r}
+#| label: unambiguous-calc
+#| echo: false
+val_pred_long <- 
+  val_pred %>% 
+  add_rowindex() %>% 
+  select(.row, .pred) %>% 
+  unnest(.pred)
+
+prob_stats <- 
+  val_pred_long %>% 
+  summarize(
+    `Sample Size` = sum(!is.na(.weight_censored)),
+    sum = sum(.weight_censored, na.rm = TRUE),
+    skewness = e1071::skewness(.weight_censored, na.rm = TRUE),
+    .by = c(.eval_time))
+```
+
+## Sum of Weights Over Time
+
+```{r}
+#| label: unambiguous-sum
+#| echo: false
+#| fig-width: 6
+#| fig-height: 4
+#| out-width: 80%
+#| fig-align: center
+prob_stats %>% 
+  ggplot(aes(.eval_time, sum, col = `Sample Size`)) + 
+  geom_step() + 
+  labs(x = "Evaluation Time", y = "Sum of Weights")
+```
+
+
+
+## Brier Score
+
+The Brier score is **calibration** metric originally meant for classification models:
+
+$$
+Brier = \frac{1}{N}\sum_{i=1}^N\sum_{k=1}^C (y_{ik} - \hat{\pi}_{ik})^2
+$$
+
+For our application, we have two classes and case weights
+
+:::{style="overflow-x:auto;overflow-y:hidden;"}
+
+$$
+Brier(t) = \frac{1}{W}\sum_{i=1}^N w_{it}\left[\underbrace{I(y_{it} = 0)(y_{it} - \hat{p}_{it})^2}_\text{non-events} +  \underbrace{I(y_{it} = 1)(y_{it} - (1 - \hat{p}_{it}))^2}_\text{events}\right]
+$$
+
+:::
+
+
+## Brier Scores 
+
+```{r}
+#| label: brier-ex
+# Out-of-sample predictions at many time points
+# Results contain survival probabilities and case weights in a 
+# list column called `.pred`
+val_pred <- augment(mod_fit, new_data = churn_val, eval_time = 5:230)
+
+val_brier <- brier_survival(val_pred, truth = event_time, .pred)
+val_brier %>% filter(.eval_time %in% seq(30, 210, by = 30))
+```
+
+## Brier Scores Over Evaluation Time {.annotation} 
+
+```{r}
+#| label: brier-time
+#| echo: false
+#| fig-width: 6
+#| fig-height: 4.25
+#| out-width: 60%
+#| fig-align: center
+val_brier %>% 
+  ggplot(aes(.eval_time, .estimate)) + 
+  geom_line() + 
+  geom_hline(yintercept = 0, col = "green") + 
+  geom_hline(yintercept = .25, col = "red", lty = 2)  +
+  labs(x = "Evaluation time", y = "Brier score")
+```
+
+## Integrated Brier Score
+
+```{r}
+#| label: brier-int-ex
+brier_survival_integrated(val_pred, truth = event_time, .pred)
+```
+
+
+## Area Under the ROC Curve
+
+This is more straightforward. 
+
+<br>
+
+We can use the standard ROC curve machinery once we have the indicators, probabilities, and censoring weights at evaluation time $\tau$ ([Hung and Chiang (2010)](https://scholar.google.com/scholar?hl=en&as_sdt=0%2C7&q=%22Optimal+Composite+Markers+for+Time-Dependent+Receiver+Operating+Characteristic+Curves+with+Censored+Survival+Data%22&btnG=)). 
+
+<br>
+
+ROC curves measure the **separation** between events and non-events and are ignorant of how well-calibrated the probabilities are.  
+
+
+## Area Under the ROC Curve 
+
+```{r auc-survival}
+val_roc_auc <- roc_auc_survival(val_pred, truth = event_time, .pred)
+val_roc_auc %>% filter(.eval_time %in% seq(30, 210, by = 30))
+```
+
+## ROC AUC Over Evaluation Time
+
+```{r}
+#| label: auc-time
+#| echo: false
+#| fig-width: 6
+#| fig-height: 4.25
+#| out-width: 60%
+#| fig-align: center
+val_roc_auc %>% 
+  ggplot(aes(.eval_time, .estimate)) + 
+  geom_hline(yintercept = 1, col = "green") +
+  geom_hline(yintercept = 1/2, col = "red") + 
+  geom_line() +
+  labs(x = "Evaluation time", y = "ROC AUC")
+```
+
+
+
+# Details
+
+## "Reverse Kaplan-Meier" Curve
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+We assume a non-informative censoring model: to compute the probability
+
+```{r}
+#| label: rkm
+#| echo: false
+#| fig-width: 6
+#| fig-height: 4
+#| out-width: 100%
+#| fig-align: center
+rkm_curve %>% 
+  ggplot(aes(time, surv)) + 
+  geom_step() + 
+  labs(x = "Time", y = "Probability of Censoring")
+```
+
+
+
+:::
+
+
+::: {.column width="50%"}
+
+For each prediction at evaluation time $\tau$, we compute the probability at an _adjusted time_: 
+
+$$
+t_i^*= 
+\begin{cases}
+t_i  - \epsilon &  \text{if }t_i \le \tau \\ \notag
+\tau - \epsilon &  \text{if }t_i > \tau  \notag 
+\end{cases}
+$$
+
+:::
+
+
+::::
+
