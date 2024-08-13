@@ -5,7 +5,7 @@ project:
 format:
   revealjs:
     slide-number: true
-    footer: <https://topepo.github.io/2024-posit>
+    footer: <https://topepo.github.io/2024-posit-conf>
     include-before-body: header.html
     include-after-body: footer-annotations.html
     theme: [default, tidymodels.scss]

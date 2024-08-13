@@ -123,6 +123,6 @@
     "href": "index.html#reverse-kaplan-meier-curve",
     "title": "Evaluating Time-to-Event Models is Hard",
     "section": "“Reverse Kaplan-Meier” Curve",
-    "text": "“Reverse Kaplan-Meier” Curve\n\n\nWe assume a non-informative censoring model: to compute the probability\n\n\n\n\n\n\n\n\n\n\nFor each prediction at evaluation time \\(\\tau\\), we compute the probability at an adjusted time:\n\\[\nt_i^*=\n\\begin{cases}\nt_i  - \\epsilon &  \\text{if }t_i \\le \\tau \\\\ \\notag\n\\tau - \\epsilon &  \\text{if }t_i &gt; \\tau  \\notag\n\\end{cases}\n\\]\n\n\n\n\nhttps://topepo.github.io/2024-posit"
+    "text": "“Reverse Kaplan-Meier” Curve\n\n\nWe assume a non-informative censoring model: to compute the probability\n\n\n\n\n\n\n\n\n\n\nFor each prediction at evaluation time \\(\\tau\\), we compute the probability at an adjusted time:\n\\[\nt_i^*=\n\\begin{cases}\nt_i  - \\epsilon &  \\text{if }t_i \\le \\tau \\\\ \\notag\n\\tau - \\epsilon &  \\text{if }t_i &gt; \\tau  \\notag\n\\end{cases}\n\\]\n\n\n\n\nhttps://topepo.github.io/2024-posit-conf"
   }
 ]
