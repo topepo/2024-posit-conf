@@ -13,7 +13,6 @@ knitr:
     comment: "#>"
 ---
 
-# bit.ly/2024-posit-conf
 
 ```{r}
 #| label: initialize
