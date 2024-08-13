@@ -111,7 +111,7 @@ three_examples +
 
 ## Classification(ish) Metrics
 
-Most dynamic metrics convert the survival probabilities to events and non-events based on some probability threshold. 
+Most dynamic metrics convert the observed event time to a binary event/non-event representation (at a specific evaluation time). 
 
 From there, we can apply existing classification metrics, such as
 
@@ -230,15 +230,25 @@ df %>%
 
 Without censored data points, this conversion would yield appropriate performance estimates since no event outcomes would be missing. 
 
-<br>
-
-Otherwise, there is the potential for bias due to missingness. 
+* Otherwise, there is the potential for bias due to missingness. 
 
 <br>
 
 We'll use tools from causal inference to compensate by creating a **propensity score** that uses the probability of being censored/missing. 
 
-Case weights use the inverse of this probability. See [Graf _et al_ (1999)](https://scholar.google.com/scholar?hl=en&as_sdt=0%2C7&q=graf+1999+%22Assessment+and+comparison+of+prognostic+classification+schemes+for+survival+data%22&btnG=).
+## Censoring Weights
+
+We currently use a simple, non-informative censoring model called a "reverse Kaplan-Meier" curve. 
+
+<br>
+
+For a given evaluation time, we can compute the probability of any sampleing being censored at $\tau$. 
+
+<br>
+
+Our metrics use case weights use the inverse of this probability. See [Graf _et al_ (1999)](https://scholar.google.com/scholar?hl=en&as_sdt=0%2C7&q=graf+1999+%22Assessment+and+comparison+of+prognostic+classification+schemes+for+survival+data%22&btnG=).
+
+
 
 ```{r}
 #| label: unambiguous-calc
@@ -285,16 +295,11 @@ $$
 
 For our application, we have two classes and case weights
 
-:::{style="overflow-x:auto;overflow-y:hidden;"}
-
 $$
-Brier(t) = \frac{1}{W}\sum_{i=1}^N w_{it}\left[\underbrace{I(y_{it} = 0)(y_{it} - \hat{p}_{it})^2}_\text{non-events} +  \underbrace{I(y_{it} = 1)(y_{it} - (1 - \hat{p}_{it}))^2}_\text{events}\right]
+Brier_{\tau} = \frac{1}{W_\tau}\sum_{i=1}^N\sum_{k=1}^C w_{it}(y_{ik\tau} - \hat{\pi}_{ik\tau})^2
 $$
 
-:::
-
-
-## Brier Scores 
+## Brier Score Code
 
 ```{r}
 #| label: brier-ex
@@ -306,6 +311,16 @@ val_pred <- augment(mod_fit, new_data = churn_val, eval_time = 5:230)
 val_brier <- brier_survival(val_pred, truth = event_time, .pred)
 val_brier %>% filter(.eval_time %in% seq(30, 210, by = 30))
 ```
+
+
+## Integrated Brier Score
+
+```{r}
+#| label: brier-int-ex
+brier_survival_integrated(val_pred, truth = event_time, .pred)
+```
+
+
 
 ## Brier Scores Over Evaluation Time {.annotation} 
 
@@ -324,13 +339,85 @@ val_brier %>%
   labs(x = "Evaluation time", y = "Brier score")
 ```
 
-## Integrated Brier Score
+## Calibration Over Time
 
 ```{r}
-#| label: brier-int-ex
-brier_survival_integrated(val_pred, truth = event_time, .pred)
-```
+#| label: calibration-time
+#| echo: false
+#| fig-width: 10
+#| fig-height: 5
+#| out-width: 10%
+#| fig-align: center
+time_as_binary_event <- function(surv, eval_time) {
+  event_time <- .extract_surv_time(surv)
+  status <- .extract_surv_status(surv)
+  is_event_before_t <- event_time <= eval_time & status == 1
+  
+  # Three possible contributions to the statistic from Graf 1999
+  # Censoring time before eval_time, no contribution (Graf category 3)
+  binary_res <- rep(NA_character_, length(event_time))
+  
+  # A real event prior to eval_time (Graf category 1)
+  binary_res <- if_else(is_event_before_t, "event", binary_res)
+  
+  # Observed time greater than eval_time (Graf category 2)
+  binary_res <- if_else(event_time > eval_time, "non-event", binary_res)
+  factor(binary_res, levels = c("event", "non-event"))
+}
 
+# Unnest the list columns and convert the event time data to binary format 
+binary_encoding <- 
+  val_pred %>% 
+  select(.pred, event_time) %>% 
+  add_rowindex() %>% 
+  unnest(.pred) %>% 
+  mutate(
+    obs_class = time_as_binary_event(event_time, .eval_time),
+    pred_class = if_else(.pred_survival >= 1 / 2, "non-event", "event"),
+    pred_class = factor(pred_class, levels = c("event", "non-event"))
+  )
+
+cal_data <- NULL
+
+for (highlight_time in seq(40, 220, by = 40)) {
+  
+  highlight_data <- 
+    binary_encoding %>% 
+    filter(.eval_time == highlight_time & !is.na(.weight_censored)) %>% 
+    select(.eval_time, .pred_survival, .weight_censored, obs_class, pred_class, event_time)  %>% 
+    filter(!is.na(.weight_censored)) %>% 
+    mutate(
+      group = cut(.pred_survival, breaks = (0:10)/10, include.lowest = TRUE)
+    )  %>% 
+    group_nest(group)  %>% 
+    mutate(
+      numer = map_dbl(data, ~ sum(.x$ .weight_censored[.x$obs_class == "non-event"])),
+      denom = map_dbl(data, ~ sum(.x$ .weight_censored)),
+      rate = numer/denom,
+      n = map_int(data, nrow),
+      log10_n = log10(map_int(data, nrow)),
+      midpoint = (row_number() - 1) + 1/2,
+      midpoint = row_number()/n(),
+      highlight_time = highlight_time
+    ) 
+
+  cal_data <- bind_rows(cal_data, highlight_data)
+  
+}
+
+cal_data %>% 
+  mutate(evaluation_time = paste("Time =", format(highlight_time))) %>% 
+  ggplot(aes(midpoint, rate, size = n)) + 
+  geom_abline(lty = 3) +
+  geom_point(alpha = 1/ 2) + 
+  coord_obs_pred(xlim = 0:1, ylim = 0:1) +
+  scale_size_continuous(transform = scales::transform_log10(), 
+                        range = c(0.5, 6),
+                        breaks = c(1, 10, 30, 100, 300, 1000)) +
+  facet_wrap(~ evaluation_time, nrow = 1) +
+  theme(legend.position = "top") +
+  labs(y = "Event Rate", x = "Bin Midpoint")
+```  
 
 ## Area Under the ROC Curve
 
@@ -369,6 +456,15 @@ val_roc_auc %>%
   labs(x = "Evaluation time", y = "ROC AUC")
 ```
 
+## Conculsion
+
+- Bad news: statistically, this is pretty convoluted. 
+
+- Good news: tidymodels handles the details and provides a clean syntax for some complex statistics. 
+
+<br> 
+
+A huge thanks to the tidymodels team: Hannah Frick, Emil Hvitfeldt, and Simon Couch!
 
 
 # Details

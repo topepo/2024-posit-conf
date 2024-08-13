@@ -413,7 +413,7 @@ Max Kuhn
 <img data-src="figures/eval-times-1.svg" class="quarto-figure quarto-figure-center r-stretch" style="width:80.0%"></section>
 <section id="classificationish-metrics" class="slide level2">
 <h2>Classification(ish) Metrics</h2>
-<p>Most dynamic metrics convert the survival probabilities to events and non-events based on some probability threshold.</p>
+<p>Most dynamic metrics convert the observed event time to a binary event/non-event representation (at a specific evaluation time).</p>
 <p>From there, we can apply existing classification metrics, such as</p>
 <ul>
 <li>Brier Score (for calibration)</li>
@@ -441,11 +441,19 @@ missing &amp; \text{if } t_{i} \leq \tau\text{ and censored }
 <section id="dealing-with-missing-outcome-data" class="slide level2">
 <h2>Dealing with Missing Outcome Data</h2>
 <p>Without censored data points, this conversion would yield appropriate performance estimates since no event outcomes would be missing.</p>
-<p><br></p>
-<p>Otherwise, there is the potential for bias due to missingness.</p>
+<ul>
+<li>Otherwise, there is the potential for bias due to missingness.</li>
+</ul>
 <p><br></p>
 <p>We’ll use tools from causal inference to compensate by creating a <strong>propensity score</strong> that uses the probability of being censored/missing.</p>
-<p>Case weights use the inverse of this probability. See <a href="https://scholar.google.com/scholar?hl=en&amp;as_sdt=0%2C7&amp;q=graf+1999+%22Assessment+and+comparison+of+prognostic+classification+schemes+for+survival+data%22&amp;btnG=">Graf <em>et al</em> (1999)</a>.</p>
+</section>
+<section id="censoring-weights" class="slide level2">
+<h2>Censoring Weights</h2>
+<p>We currently use a simple, non-informative censoring model called a “reverse Kaplan-Meier” curve.</p>
+<p><br></p>
+<p>For a given evaluation time, we can compute the probability of any sampleing being censored at <span class="math inline">\(\tau\)</span>.</p>
+<p><br></p>
+<p>Our metrics use case weights use the inverse of this probability. See <a href="https://scholar.google.com/scholar?hl=en&amp;as_sdt=0%2C7&amp;q=graf+1999+%22Assessment+and+comparison+of+prognostic+classification+schemes+for+survival+data%22&amp;btnG=">Graf <em>et al</em> (1999)</a>.</p>
 </section>
 <section id="sum-of-weights-over-time" class="slide level2">
 <h2>Sum of Weights Over Time</h2>
@@ -458,14 +466,12 @@ missing &amp; \text{if } t_{i} \leq \tau\text{ and censored }
 Brier = \frac{1}{N}\sum_{i=1}^N\sum_{k=1}^C (y_{ik} - \hat{\pi}_{ik})^2
 \]</span></p>
 <p>For our application, we have two classes and case weights</p>
-<div style="overflow-x:auto;overflow-y:hidden;">
 <p><span class="math display">\[
-Brier(t) = \frac{1}{W}\sum_{i=1}^N w_{it}\left[\underbrace{I(y_{it} = 0)(y_{it} - \hat{p}_{it})^2}_\text{non-events} +  \underbrace{I(y_{it} = 1)(y_{it} - (1 - \hat{p}_{it}))^2}_\text{events}\right]
+Brier_{\tau} = \frac{1}{W_\tau}\sum_{i=1}^N\sum_{k=1}^C w_{it}(y_{ik\tau} - \hat{\pi}_{ik\tau})^2
 \]</span></p>
-</div>
 </section>
-<section id="brier-scores" class="slide level2">
-<h2>Brier Scores</h2>
+<section id="brier-score-code" class="slide level2">
+<h2>Brier Score Code</h2>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a></a><span class="co"># Out-of-sample predictions at many time points</span></span>
 <span id="cb1-2"><a></a><span class="co"># Results contain survival probabilities and case weights in a </span></span>
@@ -486,10 +492,6 @@ Brier(t) = \frac{1}{W}\sum_{i=1}^N w_{it}\left[\underbrace{I(y_{it} = 0)(y_{it} 
 <span id="cb1-17"><a></a><span class="co">#&gt; 7 brier_survival standard          210   0.188</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
-<section id="brier-scores-over-evaluation-time" class="slide level2 annotation">
-<h2>Brier Scores Over Evaluation Time</h2>
-
-<img data-src="figures/brier-time-1.svg" class="quarto-figure quarto-figure-center r-stretch" style="width:60.0%"></section>
 <section id="integrated-brier-score" class="slide level2">
 <h2>Integrated Brier Score</h2>
 <div class="cell">
@@ -500,6 +502,14 @@ Brier(t) = \frac{1}{W}\sum_{i=1}^N w_{it}\left[\underbrace{I(y_{it} = 0)(y_{it} 
 <span id="cb2-5"><a></a><span class="co">#&gt; 1 brier_survival_integrated standard      0.0783</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
+<section id="brier-scores-over-evaluation-time" class="slide level2 annotation">
+<h2>Brier Scores Over Evaluation Time</h2>
+
+<img data-src="figures/brier-time-1.svg" class="quarto-figure quarto-figure-center r-stretch" style="width:60.0%"></section>
+<section id="calibration-over-time" class="slide level2">
+<h2>Calibration Over Time</h2>
+
+<img data-src="figures/calibration-time-1.svg" class="quarto-figure quarto-figure-center r-stretch" style="width:10.0%"></section>
 <section id="area-under-the-roc-curve" class="slide level2">
 <h2>Area Under the ROC Curve</h2>
 <p>This is more straightforward.</p>
@@ -529,6 +539,15 @@ Brier(t) = \frac{1}{W}\sum_{i=1}^N w_{it}\left[\underbrace{I(y_{it} = 0)(y_{it} 
 <h2>ROC AUC Over Evaluation Time</h2>
 
 <img data-src="figures/auc-time-1.svg" class="quarto-figure quarto-figure-center r-stretch" style="width:60.0%"></section>
+<section id="conculsion" class="slide level2">
+<h2>Conculsion</h2>
+<ul>
+<li><p>Bad news: statistically, this is pretty convoluted.</p></li>
+<li><p>Good news: tidymodels handles the details and provides a clean syntax for some complex statistics.</p></li>
+</ul>
+<p><br></p>
+<p>A huge thanks to the tidymodels team: Hannah Frick, Emil Hvitfeldt, and Simon Couch!</p>
+</section>
 <section>
 <section id="details" class="title-slide slide level1 center">
 <h1>Details</h1>
